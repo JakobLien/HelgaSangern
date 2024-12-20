@@ -1,0 +1,19 @@
+[package]
+name = "helgasangern"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rocket = "0.5.0"
+shuttle-rocket = "0.49.0"
+shuttle-runtime = "0.49.0"
+tokio = "1.26.0"
+reqwest = { version = "0.12", features = ["json", "cookies"] }
+futures = "0.3.30"
+serde_json = "1.0.133"
+chrono = { version = "0.4.39", features = ["pure-rust-locales", "unstable-locales"] }
+urlencoding = "2.1.3"
+scraper = { version = "0.22.0", features = ["atomic"] }
+shuttle-shared-db = { version = "0.49.0", features = ["postgres", "sqlx"] }
+sqlx = { version = "0.8.2", features = ["macros"] }
+maud = { version = "0.26.0", features = ["rocket"] }
