@@ -376,8 +376,8 @@ async fn index(
                     }
                     div { "
 Denne nettsiden bruke Jakob sin rombooking til å automatisk booke rom på Helgasetr til TXS kollokvie.
-Alle rom-navnene lenker til mazemap:)
-                    " }
+Alle rom-navnene lenker til mazemap:) " a href="https://github.com/JakobLien/HelgaSangern" { "(kildekode)" } 
+                    }
                 }
             }
         }
