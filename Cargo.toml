@@ -15,5 +15,5 @@ chrono = { version = "0.4.39", features = ["pure-rust-locales", "unstable-locale
 urlencoding = "2.1.3"
 scraper = { version = "0.22.0", features = ["atomic"] }
 shuttle-shared-db = { version = "0.49.0", features = ["postgres", "sqlx"] }
-sqlx = { version = "0.8.2", features = ["macros"] }
+sqlx = "0.8.2"
 maud = { version = "0.26.0", features = ["rocket"] }

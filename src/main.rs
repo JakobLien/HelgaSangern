@@ -33,10 +33,13 @@ trait GetSet {
 // Vi bruke bare postgres som en key_value store her, med følgende nyttige metoda:)
 // For å få sqlx te å funk e det fint å hiv inn følgende i en .env fil
 // DATABASE_URL=postgres://postgres:postgrespassword@localhost:5432/helgasangerntest
+
+// Update: Shuttle støtte ikkje sqlx compile-time checks. 
 impl GetSet for sqlx::PgPool {
     /// Hjelpemetode som lar oss behandle postgres som en key_value store
     async fn get(&self, key: &str) -> String {
-        let res = sqlx::query_as!(KeyValue, "SELECT * FROM key_value WHERE key = $1", key)
+        let res:Option<KeyValue> = sqlx::query_as("SELECT * FROM key_value WHERE key = $1")
+            .bind(key)
             .fetch_optional(self)
             .await
             .unwrap();
@@ -46,7 +49,9 @@ impl GetSet for sqlx::PgPool {
 
     /// Hjelpemetode som lar oss behandle postgres som en key_value store
     async fn set(&self, key: &str, value: &str) {
-        sqlx::query_as!(KeyValue, "INSERT INTO key_value (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2", key, value)
+        sqlx::query("INSERT INTO key_value (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = $2")
+            .bind(key)
+            .bind(value)
             .execute(self)
             .await
             .unwrap();
@@ -54,33 +59,62 @@ impl GetSet for sqlx::PgPool {
 }
 
 
-const ROM_PRIORITERING: [&str; 12] = [
+const ROM_PRIORITERING: [&str; 34] = [
+    // Disse tre første trur e ikkje e har tilgang te å book
     // "04-065", // Originale HelgaSangern, 40 plassa, undervisningsrom
     // "03-023", // 50 plassa, undervisningsrom
     // "03-058", // 50 plassa, undervisningsrom
-    // "03-033", // 30 plassa, grupperom
-    // "03-047", // 30 plassa, grupperom
-    // "04-072", // 30 plassa, grupperom
-    // "04-067", // 30 plassa, undervisningsrom
-    // "03-045", // 26 plassa, undervisningsrom
-    // "04-023", // 25 plassa, undervisningsrom
-    // "04-086", // 18 plassa, grupperom
-    // "05-118", // 16 plassa, grupperom
-    // "05-119", // 16 plassa, grupperom
+    
+    "03-033", // 30 plassa, grupperom
+    "03-047", // 30 plassa, grupperom
+    "04-072", // 30 plassa, grupperom
+    "04-067", // 30 plassa, undervisningsrom
+    "03-045", // 26 plassa, undervisningsrom
+    "04-023", // 25 plassa, undervisningsrom
+    "04-086", // 18 plassa, grupperom
+    "05-118", // 16 plassa, grupperom
+    "05-119", // 16 plassa, grupperom
 
-    // For testing, book dem minste romman vi finn
-    "05-063", 
-    "04-088", 
-    "04-089",
-    "04-091",
-    "04-092",
-    "04-082",
-    "04-098",
-    "04-099",
-    "03-078",
-    "05-115",
-    "05-116",
-    "03-081",
+    // Generert av getRooms.py, 15-10 plassa nedover
+    "04-075",
+    "03-075",
+    "03-074",
+    "03-063",
+    "03-062",
+    "03-061",
+    "04-093",
+    "02-045",
+    "06-034",
+    "05-126",
+    "05-121",
+    "05-114",
+    "04-094",
+    "04-087",
+    "04-077",
+    "04-074",
+    "03-087",
+    "03-086",
+    "03-085",
+    "03-064",
+    "03-032",
+    "02-043",
+    "02-042",
+    "02-041",
+    "03-068",
+
+    // // For testing, book dem minste romman vi finn
+    // "05-063", 
+    // "04-088", 
+    // "04-089",
+    // "04-091",
+    // "04-092",
+    // "04-082",
+    // "04-098",
+    // "04-099",
+    // "03-078",
+    // "05-115",
+    // "05-116",
+    // "03-081",
 ];
 
 const BOOKING_NAVN: &str = "HelgaSangern Kollokvie";
@@ -400,7 +434,7 @@ async fn main(
     // lmao, dette va my enklar enn det vi gjor på tracking helper tidligar haha
     // TODO: E veit ikkje om denne måten å hånter state på fungere, men det virke nå sånn?
     tokio::spawn(async move {
-        let mut interval = interval(TokioDuration::from_secs(60 * 60));
+        let mut interval = interval(TokioDuration::from_secs(4 * 60 * 60));
         loop {
             interval.tick().await;
 
