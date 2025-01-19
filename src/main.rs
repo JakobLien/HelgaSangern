@@ -180,14 +180,23 @@ impl ClientMethods for Client {
 /// En metode som kjøre heile rombookingsprosessen, heilt fra vi har en innlogget client, 
 /// til å finn ut hvilke rom vi skal booke, til å faktisk booke dem. 
 async fn bookRooms(secretStore: &SecretStore, pool: &sqlx::PgPool) {
-    let (client, bookings) = getClientAndBookings(&secretStore, &pool).await;
+    let mut clients: Vec<Client> = Vec::new();
+    let mut clientBookings: Vec<Vec<Value>> = Vec::new();
+    let mut bookingsCount: Vec<u8> = Vec::new();
+
+    for clientIndex in 0..NUM_LOGINS {
+        let (client, booking) = getClientAndBookings(&secretStore, &pool, clientIndex.into()).await;
+        clients.push(client);
+        bookingsCount.push(booking.len().try_into().unwrap());
+        clientBookings.push(booking);
+    }
 
     let today = Utc::now().date_naive();
 
     let mut bookingTimes: Vec<NaiveDateTime> = Vec::new();
 
     // Se på egne bookings
-    for booking in bookings {
+    for booking in clientBookings.clone().into_iter().flat_map(|v| v) {
         if booking.get("name").unwrap().as_str().unwrap() == BOOKING_NAVN {
             let currDate = NaiveDateTime::parse_from_str(booking.get("booked").unwrap().as_str().unwrap(), "%F %T").unwrap();
             bookingTimes.push(currDate);
@@ -195,12 +204,12 @@ async fn bookRooms(secretStore: &SecretStore, pool: &sqlx::PgPool) {
     }
     bookingTimes.sort_by(|a, b| a.partial_cmp(b).unwrap());
 
-    println!("bookingTimes: {:#?}", bookingTimes);
+    // println!("bookingTimes: {:#?}", bookingTimes);
 
     // Generer liste av ting vi ønske å booke
     let mut newBookingTimes: Vec<NaiveDateTime> = Vec::new();
     newBookingTimes.push(bookingTimes.last().unwrap_or(&Utc::now().naive_local()).clone());
-    for _i in 0..(8-bookingTimes.len()) {
+    for _i in 0..(MAX_BOOKINGS - bookingsCount.iter().sum::<u8>()) {
         newBookingTimes.push(getNextBooking(newBookingTimes.last().unwrap()))
     }
     newBookingTimes.remove(0);
@@ -210,27 +219,31 @@ async fn bookRooms(secretStore: &SecretStore, pool: &sqlx::PgPool) {
     // Genrer liste av når romman e ledig
     let mut romSchedules:Vec<Value>  = Vec::new();
 
-    for newBookingTime in newBookingTimes {
+    // Må bruk while i stedet for en for loop fordi størrelsen endre seg ila loopinga. E funksjonelt sett en for loop:)
+    let mut newBookingTimesIndex = 0;
+    while newBookingTimesIndex < newBookingTimes.len() {
+        let newBookingTime = newBookingTimes.get(newBookingTimesIndex).unwrap();
+        let mut booked = false;
+
         for (roomIndex, roomName) in ROM_PRIORITERING.iter().enumerate() {
             if roomIndex >= romSchedules.len() {
                 // Her har vi ikkje sendt request for dette rommet ennå
-                romSchedules.push(client.getScheduleForRoom(roomName, today, today.checked_add_days(Days::new(14)).unwrap())
+                romSchedules.push(clients[0].getScheduleForRoom(roomName, today, today.checked_add_days(Days::new(14)).unwrap())
                 .await.unwrap().get("events").unwrap().clone())
             }
 
-            let roomSchedule = romSchedules.get(roomIndex).unwrap().clone();
+            let roomSchedule = romSchedules.get(roomIndex).unwrap().as_array().unwrap().clone();
 
             // println!("roomSchedule: {:#?}", roomSchedule);
 
-            // Her vil hvert element i roomAvailability vær en liste av events, og romAvailability har alle rom te og med nåværende rommet. 
+            // Her vil hvert element i roomSchedule vær en liste av events, og romSchedules har alle rom te og med nåværende rommet. 
 
             let mut isFree = true;
 
             // println!("roomSchedule: {}", roomSchedule.to_string());
 
             // Sjekk om nån events i rommet skjer idag. Isåfall, continue. 
-            for event in roomSchedule.as_array().unwrap() {
-                // if 
+            for event in roomSchedule {
                 let start = DateTime::parse_from_str(event.get("dtstart").unwrap().as_str().unwrap(), "%FT%T%#z").unwrap();
                 let end = DateTime::parse_from_str(event.get("dtend").unwrap().as_str().unwrap(), "%FT%T%#z").unwrap();
                 let bookingName = event.get("summary").unwrap().as_str().unwrap();
@@ -243,27 +256,49 @@ async fn bookRooms(secretStore: &SecretStore, pool: &sqlx::PgPool) {
                 }
             }
 
-            if isFree {
-                println!("Free: {}", roomName);
-                // Om ingen events i det rommet skjer på denne dagen, book det
-                println!("Booking response: {:#?}", client.bookRoom(roomName, &newBookingTime).await.unwrap().text().await.unwrap());
-                break;
-            } else {
+            if !isFree {
                 println!("Not free: {}", roomName);
+                continue;
             }
+
+            // Logikk som velge ledig client
+            let clientIndex = (0..NUM_LOGINS).into_iter()
+                .filter(|i| bookingsCount[i.clone() as usize] < BOOKINGS_PER_LOGIN)
+                .next().unwrap() as usize;
+
+            let client = &clients[clientIndex];
+
+            println!("Free: {}", roomName);
+            // Om ingen events i det rommet skjer på denne dagen, book det
+            println!("Booking response: {:#?}", client.bookRoom(roomName, &newBookingTime).await.unwrap().text().await.unwrap());
+            
+            bookingsCount[clientIndex] += 1;
+
+            booked = true;
+            break;
         }
+
+        if !booked {
+            // Om du ikkje kunna book en booking
+            newBookingTimes.push(getNextBooking(newBookingTimes.last().unwrap()));
+        }
+
+        newBookingTimesIndex += 1;
     }
 }
 
 
-const KEY_TP_COOKIE: &str = "TP_COOKIE_KEY";
+const KEY_TP_COOKIE_PREFIX: &str = "TP_COOKIE_KEY_";
+const NUM_LOGINS: u8 = 2;
+const BOOKINGS_PER_LOGIN: u8 = 8;
+const MAX_BOOKINGS: u8 = NUM_LOGINS * BOOKINGS_PER_LOGIN;
 
 /// Returne og sett cookies for en innlogget reqwest::Client. 
 /// Denne tråkke gjennom dem samme requestsa kæm som helst andre gjør når dem logge inn med feide. 
 /// Det funke, men bli fort ødelagt det øyeblikket noko som helst med feide innlogginga endre seg. 
 /// Samtidig e det trolig ikkje så ofte for en så stor og viktig tjeneste. 
-async fn newClient(secretStore: &SecretStore, pool: &sqlx::PgPool) -> Client {
-    println!("Logging in client!");
+async fn newClient(secretStore: &SecretStore, pool: &sqlx::PgPool, userIndex: usize) -> Client {
+    println!("Logging in client {}!", userIndex.to_string());
 
     let cookie_store = Arc::new(cookie::Jar::default());
     let client = Client::builder() // Den følge redirects by default
@@ -293,8 +328,8 @@ async fn newClient(secretStore: &SecretStore, pool: &sqlx::PgPool) -> Client {
     let res3 = client.post(res2.url().as_str()) // Postes te nøyaktig samme addresse
         .header("Content-Type", "application/x-www-form-urlencoded") // Må sett denne for at servern ska les form body
         .body(format!("has_js=0&feidename={}&password={}", 
-            secretStore.get("FEIDE_BRUKERNAVN").unwrap(), 
-            urlencoding::encode(&secretStore.get("FEIDE_PASSORD").unwrap()).into_owned())
+            secretStore.get("FEIDE_BRUKERNAVN").unwrap().split(',').nth(userIndex).unwrap(), 
+            urlencoding::encode(&secretStore.get("FEIDE_PASSORD").unwrap().split(',').nth(userIndex).unwrap()).into_owned())
         )
         .send().await.unwrap();
 
@@ -320,7 +355,9 @@ async fn newClient(secretStore: &SecretStore, pool: &sqlx::PgPool) -> Client {
         ))
         .send().await.unwrap();
 
-    pool.set(KEY_TP_COOKIE, cookie_store.clone().cookies(&Url::parse("https://tp.educloud.no").unwrap()).unwrap().to_str().unwrap()).await;
+    let cookieStr = cookie_store.clone().cookies(&Url::parse("https://tp.educloud.no").unwrap()).unwrap();
+    let cookieStr = cookieStr.to_str().unwrap().split(';').map(|e| e.trim()).filter(|e| e.starts_with("PHPSESSID=")).next().unwrap();
+    pool.set(&(KEY_TP_COOKIE_PREFIX.to_string() + &userIndex.to_string()), &cookieStr).await;
 
     println!("Finished logging in client!");
     client
@@ -328,9 +365,9 @@ async fn newClient(secretStore: &SecretStore, pool: &sqlx::PgPool) -> Client {
 
 
 /// Skaffe en reqwest::Clent med cookies fra postgres 
-async fn getClient(pool: &sqlx::PgPool) -> Client {
+async fn getClient(pool: &sqlx::PgPool, userIndex: usize) -> Client {
     let cookieJar = Arc::new(cookie::Jar::default());
-    cookieJar.add_cookie_str(&pool.get(KEY_TP_COOKIE).await, &"https://tp.educloud.no".parse::<reqwest::Url>().unwrap());
+    cookieJar.add_cookie_str(&pool.get(&(KEY_TP_COOKIE_PREFIX.to_string() + &userIndex.to_string())).await, &"https://tp.educloud.no".parse::<reqwest::Url>().unwrap());
     Client::builder() // Den følge redirect by default
         .cookie_provider(cookieJar)
         .build()
@@ -341,15 +378,15 @@ async fn getClient(pool: &sqlx::PgPool) -> Client {
 // Hjelpefunksjon som skaffe en client og et sett bookings
 // Dette fordi client validere cookie ved å send et request, og første request vi sende
 // i begge inngangan (nettsida og cronjob) e å skaff egne bookings
-async fn getClientAndBookings(secretStore: &SecretStore, pool: &sqlx::PgPool) -> (Client, Vec<Value>) {
-    let client = getClient(pool).await;
+async fn getClientAndBookings(secretStore: &SecretStore, pool: &sqlx::PgPool, userIndex: usize) -> (Client, Vec<Value>) {
+    let client = getClient(pool, userIndex).await;
     let bookings = client.getBookings().await;
     if bookings.is_ok() { // Om cookien e good
         return (client, bookings.unwrap().as_array().unwrap().to_owned());
     }
 
     // Om cookien ikkje e det
-    let client = newClient(secretStore, pool).await;
+    let client = newClient(secretStore, pool, userIndex).await;
     let bookings = client.getBookings().await.unwrap().as_array().unwrap().to_owned();
     (client, bookings)
 }
@@ -378,9 +415,19 @@ async fn index(
     secretStore: &State<SecretStore>,
     pool: &State<sqlx::PgPool>
 ) -> RawHtml<String> {
-    let (_client, bookings) = getClientAndBookings(&secretStore, &pool).await;
+    let mut bookings: Vec<Value> = Vec::new();
 
-    let bookings: Vec<Value> = bookings.into_iter().filter(|e| e.get("name").unwrap() == BOOKING_NAVN).collect();
+    for clientIndex in 0..NUM_LOGINS {
+        let (_client, booking) = getClientAndBookings(&secretStore, &pool, clientIndex.into()).await;
+        bookings.extend(booking);
+    }
+
+    let mut bookings: Vec<Value> = bookings.into_iter().filter(|e| e.get("name").unwrap() == BOOKING_NAVN).collect();
+
+    bookings.sort_by(|a, b| 
+        NaiveDateTime::parse_from_str(a.get("booked").unwrap().as_str().unwrap(), "%F %T").unwrap()
+        .partial_cmp(&NaiveDateTime::parse_from_str(b.get("booked").unwrap().as_str().unwrap(), "%F %T").unwrap()).unwrap()
+    );
 
     // Når du jobbe med dette kjør cargo watch -cqx 'shuttle run'
     // Når du jobbe med CSS kjør ./tailwindcss -o static/styles.css --watch --minify
@@ -408,8 +455,8 @@ async fn index(
                             span { (booking.get("tid").unwrap().as_str().unwrap()) }
                         }
                     }
-                    div { "
-Denne nettsiden bruke Jakob sin rombooking til å automatisk booke rom på Helgasetr til TXS kollokvie.
+                    div class="pb-12" { "
+Denne nettsiden bruke Jakob og Pål sin rombooking til å automatisk booke rom på Helgasetr til TXS kollokvie.
 Alle rom-navnene lenker til mazemap:) " a href="https://github.com/JakobLien/HelgaSangern" { "(kildekode)" } 
                     }
                 }
