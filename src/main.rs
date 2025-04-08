@@ -16,7 +16,10 @@ use chrono::{DateTime, Datelike, Days, Duration as ChronoDuration, Locale, Naive
 
 use scraper::{Html, Selector};
 
-use tokio::time::{interval, Duration as TokioDuration};
+use tokio::{task, time::{interval, Duration as TokioDuration}};
+mod update;
+
+use crate::update::send_email;
 
 #[derive(sqlx::FromRow)]
 struct KeyValue {
@@ -65,13 +68,13 @@ const ROM_PRIORITERING: [&str; 34] = [
     // "03-023", // 50 plassa, undervisningsrom
     // "03-058", // 50 plassa, undervisningsrom
     
-    "03-033", // 30 plassa, grupperom
+    "04-072", // 30 plassa, grupperom, veldig bra rom, skikkelig utsikt
     "03-047", // 30 plassa, grupperom
-    "04-072", // 30 plassa, grupperom
+    "04-023", // 25 plassa, undervisningsrom, bra rom
+    "03-033", // 30 plassa, grupperom, meh
     "04-067", // 30 plassa, undervisningsrom
-    "03-045", // 26 plassa, undervisningsrom
-    "04-023", // 25 plassa, undervisningsrom
-    "04-086", // 18 plassa, grupperom
+    "03-045", // 26 plassa, undervisningsrom, kjipt rom
+    "04-086", // 18 plassa, grupperom, glassrom med få ladeplassa
     "05-118", // 16 plassa, grupperom
     "05-119", // 16 plassa, grupperom
 
@@ -489,6 +492,35 @@ async fn main(
             println!("Running cron job");
 
             bookRooms(&secreteStoreClone, &poolClone).await;
+        }
+    });
+
+    let secreteStoreClone2 = secretStore.clone();
+
+    tokio::spawn(async move {
+        let mut interval = interval(TokioDuration::from_secs(60 * 30)); // 30 minutes
+        loop {
+            interval.tick().await;
+            // Your function snippet here
+            println!("Running every 30 minutes");
+
+            let secretStoreCopy = secreteStoreClone2.clone();
+            let task = task::spawn(async move {
+                update::update(&secretStoreCopy.clone()).await.unwrap();
+            });
+
+            let secretStoreCopy = secreteStoreClone2.clone();
+            if let Err(e) = task.await {
+                println!("Panic!");
+
+                let mut reason = "";
+                if let Some(panic_reason) = e.try_into_panic().ok() {
+                    if let Some(r) = panic_reason.downcast_ref::<&str>() {
+                        reason = r;
+                    }
+                }
+                send_email(&secretStoreCopy, "Tracking helper error", &format!("Reason?: {}", reason)).await.expect("Send email?");
+            }
         }
     });
 
